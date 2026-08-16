@@ -34,13 +34,37 @@ export type PaidSiteLoginStatus = {
 };
 
 const STUDIO_TOKEN_NAME = "人物影棚";
+const TRUSTED_ACCOUNT_KEY = "personal-image-studio:trusted-account";
 export const PAID_OPENAI_CHANNEL_ID = "huiliu-account-openai";
 export const PAID_GEMINI_CHANNEL_ID = "huiliu-account-gemini";
 const dashboardBase = String(import.meta.env.VITE_PAID_DASHBOARD_BASE || "").replace(/\/+$/, "");
 const relayBase = String(import.meta.env.VITE_PAID_API_BASE || (typeof window === "undefined" ? "" : window.location.origin)).replace(/\/+$/, "");
+let accountConnectionGeneration = 0;
 
 function accountUrl(path: string) {
     return `${dashboardBase}${path}`;
+}
+
+function trustedAccountUserId() {
+    if (typeof window === "undefined") return null;
+    try {
+        const value = Number.parseInt(window.localStorage.getItem(TRUSTED_ACCOUNT_KEY) || "", 10);
+        return Number.isInteger(value) && value > 0 ? value : null;
+    } catch {
+        return null;
+    }
+}
+
+function rememberTrustedAccount(userId: number) {
+    try {
+        if (typeof window !== "undefined") window.localStorage.setItem(TRUSTED_ACCOUNT_KEY, String(userId));
+    } catch {}
+}
+
+function forgetTrustedAccount() {
+    try {
+        if (typeof window !== "undefined") window.localStorage.removeItem(TRUSTED_ACCOUNT_KEY);
+    } catch {}
 }
 
 function asUser(value: AccountUserPayload): StudioAccountUser {
@@ -60,7 +84,7 @@ async function parseResponse<T>(response: Response): Promise<ApiResponse<T>> {
     return body;
 }
 
-async function refreshAccessToken() {
+async function refreshAccessToken(expectedUserId?: number) {
     const current = useStudioAuthStore.getState();
     const response = await fetch(accountUrl("/api/user/auth/refresh"), {
         method: "POST",
@@ -69,8 +93,9 @@ async function refreshAccessToken() {
     });
     const body = await parseResponse<AuthBundle>(response);
     if (!body.data) throw new Error("登录会话返回为空");
+    if (expectedUserId !== undefined && body.data.user.id !== expectedUserId) throw new Error("登录会话与本浏览器绑定账号不一致");
     setAuthBundle(body.data);
-    return body.data.access_token;
+    return body.data;
 }
 
 function accountStateFor(expectedUserId?: number) {
@@ -81,13 +106,13 @@ function accountStateFor(expectedUserId?: number) {
 
 export async function paidAccountFetch(path: string, init: RequestInit = {}, retry = true, expectedUserId?: number) {
     let token = accountStateFor(expectedUserId).accessToken;
-    if (!token) token = await refreshAccessToken();
+    if (!token) token = (await refreshAccessToken(expectedUserId)).access_token;
     accountStateFor(expectedUserId);
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${token}`);
     const response = await fetch(accountUrl(path), { ...init, headers, credentials: "include" });
     if (response.status !== 401 || !retry) return response;
-    token = await refreshAccessToken();
+    token = (await refreshAccessToken(expectedUserId)).access_token;
     accountStateFor(expectedUserId);
     headers.set("Authorization", `Bearer ${token}`);
     return fetch(accountUrl(path), { ...init, headers, credentials: "include" });
@@ -104,47 +129,52 @@ function setAuthBundle(bundle: AuthBundle) {
     });
 }
 
-async function loadAccountModels() {
-    const response = await paidAccountFetch("/api/user/models");
+async function loadAccountModels(expectedUserId: number) {
+    const response = await paidAccountFetch("/api/user/models", {}, true, expectedUserId);
     const body = await parseResponse<string[]>(response);
     return Array.from(new Set((body.data || []).map((model) => model.trim()).filter(Boolean))).sort();
 }
 
-async function listTokens() {
-    const response = await paidAccountFetch("/api/token/?p=0&size=100");
+async function listTokens(expectedUserId: number) {
+    const response = await paidAccountFetch("/api/token/?p=0&size=100", {}, true, expectedUserId);
     const body = await parseResponse<TokenPage>(response);
     return body.data?.items || [];
 }
 
-async function createStudioToken(group: string) {
-    const response = await paidAccountFetch("/api/token/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            name: STUDIO_TOKEN_NAME,
-            expired_time: -1,
-            remain_quota: 0,
-            unlimited_quota: true,
-            model_limits_enabled: false,
-            model_limits: "",
-            allow_ips: "",
-            group,
-            cross_group_retry: false,
-        }),
-    });
+async function createStudioToken(group: string, expectedUserId: number) {
+    const response = await paidAccountFetch(
+        "/api/token/",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                name: STUDIO_TOKEN_NAME,
+                expired_time: -1,
+                remain_quota: 0,
+                unlimited_quota: true,
+                model_limits_enabled: false,
+                model_limits: "",
+                allow_ips: "",
+                group,
+                cross_group_retry: false,
+            }),
+        },
+        true,
+        expectedUserId,
+    );
     await parseResponse<never>(response);
 }
 
-async function ensureStudioToken(group: string): Promise<StudioAccountToken> {
-    let tokens = await listTokens();
+async function ensureStudioToken(group: string, expectedUserId: number): Promise<StudioAccountToken> {
+    let tokens = await listTokens(expectedUserId);
     let selected = tokens.filter((token) => token.status === 1 && token.name === STUDIO_TOKEN_NAME).sort((a, b) => (b.created_time || b.id) - (a.created_time || a.id))[0];
     if (!selected) {
-        await createStudioToken(group);
-        tokens = await listTokens();
+        await createStudioToken(group, expectedUserId);
+        tokens = await listTokens(expectedUserId);
         selected = tokens.filter((token) => token.status === 1 && token.name === STUDIO_TOKEN_NAME).sort((a, b) => (b.created_time || b.id) - (a.created_time || a.id))[0];
     }
     if (!selected) throw new Error("无法创建人物影棚专用 API Key");
-    const response = await paidAccountFetch(`/api/token/${selected.id}/key`, { method: "POST" });
+    const response = await paidAccountFetch(`/api/token/${selected.id}/key`, { method: "POST" }, true, expectedUserId);
     const body = await parseResponse<{ key?: string }>(response);
     const key = body.data?.key || "";
     if (!key) throw new Error("无法读取人物影棚 API Key");
@@ -185,24 +215,44 @@ export function removePaidModelsFromCanvas() {
     );
 }
 
-async function finishAccountConnection() {
+function beginAccountConnection() {
+    accountConnectionGeneration += 1;
+    return accountConnectionGeneration;
+}
+
+function assertCurrentAccountConnection(generation: number, expectedUserId: number) {
     const auth = useStudioAuthStore.getState();
-    if (!auth.user) throw new Error("登录账号信息为空");
-    const [models, apiToken] = await Promise.all([loadAccountModels(), ensureStudioToken(auth.user.group)]);
+    if (generation !== accountConnectionGeneration || auth.user?.id !== expectedUserId) throw new Error("登录账号已切换，请重新连接");
+}
+
+async function finishAccountConnection(generation: number, expectedUserId: number, group: string) {
+    assertCurrentAccountConnection(generation, expectedUserId);
+    const [models, apiToken] = await Promise.all([loadAccountModels(expectedUserId), ensureStudioToken(group, expectedUserId)]);
+    assertCurrentAccountConnection(generation, expectedUserId);
     await waitForStudioHydration();
-    useStudioStore.getState().bindAccountOwner(auth.user.id);
+    assertCurrentAccountConnection(generation, expectedUserId);
+    useStudioStore.getState().bindAccountOwner(expectedUserId);
     syncPaidModelsToCanvas(models, apiToken.key);
     useStudioAuthStore.getState().setSession({ models, apiToken, status: "ready", error: "" });
 }
 
 export async function bootstrapPaidAccount() {
     const store = useStudioAuthStore.getState();
+    const generation = beginAccountConnection();
+    const expectedUserId = trustedAccountUserId();
+    if (!expectedUserId) {
+        removePaidModelsFromCanvas();
+        store.reset();
+        return false;
+    }
     store.setSession({ status: "loading", error: "" });
     try {
-        await refreshAccessToken();
-        await finishAccountConnection();
+        const bundle = await refreshAccessToken(expectedUserId);
+        await finishAccountConnection(generation, bundle.user.id, bundle.user.group || "default");
         return true;
     } catch (error) {
+        if (generation !== accountConnectionGeneration) return false;
+        forgetTrustedAccount();
         removePaidModelsFromCanvas();
         store.reset();
         return false;
@@ -224,6 +274,7 @@ export async function loadPaidSiteLoginStatus(): Promise<PaidSiteLoginStatus> {
 }
 
 export async function loginPaidAccount(username: string, password: string, turnstileToken = ""): Promise<LoginResult> {
+    const generation = beginAccountConnection();
     useStudioAuthStore.getState().setSession({ status: "loading", error: "" });
     try {
         const query = new URLSearchParams();
@@ -242,9 +293,11 @@ export async function loginPaidAccount(username: string, password: string, turns
         }
         if (!body.data || !("access_token" in body.data)) throw new Error("登录响应缺少访问令牌");
         setAuthBundle(body.data);
-        await finishAccountConnection();
+        await finishAccountConnection(generation, body.data.user.id, body.data.user.group || "default");
+        rememberTrustedAccount(body.data.user.id);
         return { ready: true };
     } catch (error) {
+        if (generation !== accountConnectionGeneration) throw error;
         const message = error instanceof Error ? error.message : "登录失败";
         useStudioAuthStore.getState().setSession({ status: "error", error: message });
         throw error;
@@ -252,6 +305,7 @@ export async function loginPaidAccount(username: string, password: string, turns
 }
 
 export async function completePaidAccount2FA(flowToken: string, code: string) {
+    const generation = beginAccountConnection();
     const response = await fetch(accountUrl("/api/user/login/2fa"), {
         method: "POST",
         credentials: "include",
@@ -261,10 +315,13 @@ export async function completePaidAccount2FA(flowToken: string, code: string) {
     const body = await parseResponse<AuthBundle>(response);
     if (!body.data) throw new Error("两步验证响应为空");
     setAuthBundle(body.data);
-    await finishAccountConnection();
+    await finishAccountConnection(generation, body.data.user.id, body.data.user.group || "default");
+    rememberTrustedAccount(body.data.user.id);
 }
 
 export function disconnectPaidAccount() {
+    beginAccountConnection();
+    forgetTrustedAccount();
     removePaidModelsFromCanvas();
     useStudioAuthStore.getState().reset();
 }

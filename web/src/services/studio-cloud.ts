@@ -95,9 +95,11 @@ async function syncNow(ownerUserId: number): Promise<StudioCloudResult> {
     const remote = await readRemoteState(ownerUserId);
     requireSyncOwner(ownerUserId);
     const merged = remote ? mergeStudioData(local, remote.data) : local;
+    useStudioStore.getState().replaceStudioData(merged);
+    const normalized = studioDataSnapshot();
     let uploaded = 0;
     let downloaded = 0;
-    await mapConcurrent(collectStorageKeys(merged), 3, async (storageKey) => {
+    await mapConcurrent(collectStorageKeys(normalized), 3, async (storageKey) => {
         const localBlob = await getImageBlob(storageKey);
         const encodedKey = encodeURIComponent(storageKey);
         if (!localBlob) {
@@ -116,13 +118,17 @@ async function syncNow(ownerUserId: number): Promise<StudioCloudResult> {
         uploaded += 1;
     });
     requireSyncOwner(ownerUserId);
-    useStudioStore.getState().replaceStudioData(merged);
     const syncedAt = new Date().toISOString();
-    const save = await paidAccountFetch(cloudPath("/state"), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ app: "personal-image-studio", version: 1, updatedAt: syncedAt, data: merged } satisfies StudioCloudManifest),
-    }, true, ownerUserId);
+    const save = await paidAccountFetch(
+        cloudPath("/state"),
+        {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ app: "personal-image-studio", version: 1, updatedAt: syncedAt, data: normalized } satisfies StudioCloudManifest),
+        },
+        true,
+        ownerUserId,
+    );
     if (!save.ok) throw new Error(`保存云端数据失败 (${save.status})`);
     return { uploaded, downloaded, syncedAt };
 }
@@ -139,6 +145,19 @@ export function syncStudioCloud(): Promise<StudioCloudResult> {
         });
     }
     return activeSync;
+}
+
+export async function syncStudioCloudWithRecovery() {
+    let first: StudioCloudResult;
+    try {
+        first = await syncStudioCloud();
+    } catch (error) {
+        useStudioStore.getState().recoverInterruptedJobs();
+        throw error;
+    }
+    if (!useStudioStore.getState().recoverInterruptedJobs()) return first;
+    const second = await syncStudioCloud();
+    return { ...second, uploaded: first.uploaded + second.uploaded, downloaded: first.downloaded + second.downloaded };
 }
 
 export function scheduleStudioCloudSync(onError?: (error: Error) => void) {

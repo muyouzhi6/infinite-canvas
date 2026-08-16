@@ -19,12 +19,13 @@ import {
 } from "@/services/api/studio-account";
 import { requestEdit } from "@/services/api/image";
 import { deleteStoredImages, getImageBlob, resolveImageUrl, uploadImage } from "@/services/image-storage";
-import { cancelScheduledStudioCloudSync, scheduleStudioCloudSync, syncStudioCloud } from "@/services/studio-cloud";
-import { buildStudioImagePrompt, planStudioShots, studioReferenceRoles } from "@/services/studio-planner";
+import { cancelScheduledStudioCloudSync, scheduleStudioCloudSync, syncStudioCloudWithRecovery } from "@/services/studio-cloud";
+import { buildStudioGenerationReferences, buildStudioImagePrompt } from "@/services/studio-generation";
+import { planStudioShots } from "@/services/studio-planner";
+import { MAX_STUDIO_CONCURRENCY, nextStudioJobSequence, studioJobLabel } from "@/services/studio-state";
 import { guessCapability, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useStudioAuthStore } from "@/stores/use-studio-auth-store";
 import { useStudioStore } from "@/stores/use-studio-store";
-import type { ReferenceImage } from "@/types/image";
 import type { StudioJob, StudioNodeSource, StudioProfile, StudioShot, StudioStoredImage, StudioWorkflow } from "@/types/studio";
 
 const workflowOptions = [
@@ -110,7 +111,7 @@ export default function StudioPage() {
         }
         void bootstrapPaidAccount().then((connected) => {
             if (!connected) return;
-            void syncStudioCloud().catch(() => undefined);
+            void syncStudioCloudWithRecovery().catch(() => undefined);
         });
     }, []);
 
@@ -135,6 +136,10 @@ export default function StudioPage() {
                 : settings.imageModel || resolveModelForCapability(customConfig, undefined, "image");
         if (plannerModel !== settings.plannerModel || imageModel !== settings.imageModel) updateSettings({ plannerModel, imageModel });
     }, [accountImageModels, accountTextModels, auth.status, customConfig, settings.imageModel, settings.imageSource, settings.plannerModel, settings.plannerSource, updateSettings]);
+
+    useEffect(() => {
+        if (auth.status === "ready" && settings.updatedAt !== new Date(0).toISOString()) scheduleStudioCloudSync();
+    }, [auth.status, settings.updatedAt]);
 
     useEffect(() => {
         if (activeJob && page > Math.max(1, Math.ceil(activeJob.shots.length / PAGE_SIZE))) setPage(1);
@@ -181,6 +186,7 @@ export default function StudioPage() {
         const now = new Date().toISOString();
         const job: StudioJob = {
             id: nanoid(),
+            sequence: nextStudioJobSequence(jobs),
             title: `${selectedProfile.name} · ${meta.title}`,
             workflow: settings.workflow,
             profileId: selectedProfile.id,
@@ -262,7 +268,8 @@ export default function StudioPage() {
             }
         };
         try {
-            await Promise.all(Array.from({ length: Math.min(job.concurrency, queue.length) }, worker));
+            const concurrency = Math.max(1, Math.min(MAX_STUDIO_CONCURRENCY, Math.floor(job.concurrency || 1)));
+            await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
             const current = useStudioStore.getState().jobs.find((item) => item.id === job.id);
             if (current) {
                 const remaining = current.shots.some((shot) => shot.status === "queued" || shot.status === "running");
@@ -282,11 +289,7 @@ export default function StudioPage() {
         const startedAt = performance.now();
         try {
             const config = buildStudioNodeConfig(effectiveConfig, shot.modelSource, shot.model, "image", { aspectRatio: shot.aspectRatio, resolution: shot.resolution });
-            const roles = studioReferenceRoles(job.workflow);
-            const references: ReferenceImage[] = [
-                toReference(profile.identity, "identity-anchor.png", roles.identity),
-                toReference(job.reference, `${job.workflow}-reference.png`, roles.workflow),
-            ];
+            const references = buildStudioGenerationReferences(profile);
             const result = await requestEdit(config, buildStudioImagePrompt(profile, job, shot), references, undefined, { signal });
             if (!result[0]?.dataUrl) throw new Error("模型没有返回图片");
             const stored = await storeImageData(result[0].dataUrl, `${job.title}-${shot.index + 1}.png`);
@@ -326,7 +329,7 @@ export default function StudioPage() {
         if (auth.status !== "ready") return setLoginOpen(true);
         setSyncing(true);
         try {
-            const result = await syncStudioCloud();
+            const result = await syncStudioCloudWithRecovery();
             message.success(`云同步完成：上传 ${result.uploaded}，下载 ${result.downloaded}`);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "云同步失败");
@@ -383,7 +386,13 @@ export default function StudioPage() {
                         <Tooltip title="同步预设与成片">
                             <Button type="text" icon={syncing ? <LoaderCircle className="size-4 animate-spin" /> : <Cloud className="size-4" />} onClick={() => void manualSync()} aria-label="云同步" />
                         </Tooltip>
-                        <Button type="text" icon={auth.status === "ready" ? <Check className="size-4" /> : <LogIn className="size-4" />} onClick={() => setLoginOpen(true)}>
+                        <Button
+                            type="text"
+                            icon={auth.status === "ready" ? <Check className="size-4" /> : <LogIn className="size-4" />}
+                            onClick={() => setLoginOpen(true)}
+                            aria-label={auth.status === "ready" ? `付费站账号：${auth.user?.displayName || "已连接"}` : "登录付费站"}
+                            title={auth.status === "ready" ? `付费站账号：${auth.user?.displayName || "已连接"}` : "登录付费站"}
+                        >
                             <span className="hidden sm:inline">{auth.user?.displayName || "登录付费站"}</span>
                         </Button>
                     </div>
@@ -502,7 +511,7 @@ export default function StudioPage() {
                             </label>
                             <label>
                                 <span className="mb-1.5 block text-xs font-medium text-stone-500">并发数</span>
-                                <InputNumber className="w-full" min={1} max={4} value={settings.concurrency} onChange={(concurrency) => updateSettings({ concurrency: concurrency || 1 })} />
+                                <InputNumber className="w-full" min={1} max={MAX_STUDIO_CONCURRENCY} value={settings.concurrency} onChange={(concurrency) => updateSettings({ concurrency: concurrency || 1 })} />
                             </label>
                         </div>
                     </div>
@@ -511,7 +520,7 @@ export default function StudioPage() {
                 <section className="thin-scrollbar min-w-0 lg:min-h-0 lg:overflow-y-auto lg:pl-1">
                     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                         <div className="min-w-0">
-                            <h2 className="truncate text-xl font-semibold">{activeJob?.title || "拍摄结果"}</h2>
+                            <h2 className="truncate text-xl font-semibold">{activeJob ? studioJobLabel(activeJob) : "拍摄结果"}</h2>
                             {activeJob ? (
                                 <p className="mt-1 text-xs text-stone-500">
                                     {completedCount}/{activeJob.shots.length} 完成{failedCount ? ` · ${failedCount} 失败` : ""}
@@ -525,14 +534,14 @@ export default function StudioPage() {
                                 <Select
                                     className="w-36 sm:w-52"
                                     value={activeJob?.id}
-                                    options={jobs.map((job) => ({ value: job.id, label: job.title }))}
+                                    options={jobs.map((job) => ({ value: job.id, label: studioJobLabel(job) }))}
                                     onChange={(id) => {
                                         setActiveJobId(id);
                                         setPage(1);
                                     }}
                                 />
                             ) : null}
-                            {activeJob && (activeJob.status === "paused" || activeJob.status === "failed") && !runningJobId ? (
+                            {activeJob && activeJob.shots.some((shot) => shot.status !== "success") && (activeJob.status === "paused" || activeJob.status === "failed") && !runningJobId ? (
                                 <Button icon={<Play className="size-4" />} onClick={() => void continueJob(activeJob)}>
                                     继续
                                 </Button>
@@ -671,10 +680,6 @@ export default function StudioPage() {
 function withoutPaidChannels(config: AiConfig): AiConfig {
     const channels = config.channels.filter((channel) => channel.id !== PAID_OPENAI_CHANNEL_ID && channel.id !== PAID_GEMINI_CHANNEL_ID);
     return { ...config, channels, models: channels.flatMap((channel) => channel.models.map((model) => `${channel.id}::${model.name}`)) };
-}
-
-function toReference(image: StudioStoredImage, name: string, promptRole: string): ReferenceImage {
-    return { id: image.id, name, type: image.mimeType, dataUrl: "", promptRole, storageKey: image.storageKey };
 }
 
 async function storeImage(file: Blob & { name?: string }): Promise<StudioStoredImage> {

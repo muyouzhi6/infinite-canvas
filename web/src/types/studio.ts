@@ -55,6 +55,7 @@ export type StudioShot = {
 
 export type StudioJob = {
     id: string;
+    sequence?: number;
     title: string;
     workflow: StudioWorkflow;
     profileId: string;

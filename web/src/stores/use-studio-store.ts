@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 
 import { localForageStorage } from "@/lib/localforage-storage";
+import { boundedStudioInteger, MAX_STUDIO_CONCURRENCY, normalizeStudioJobs, normalizeStudioSettings } from "@/services/studio-state";
 import type { StudioData, StudioJob, StudioProfile, StudioSettings, StudioShot } from "@/types/studio";
 
 type StudioStore = StudioData & {
@@ -16,6 +17,7 @@ type StudioStore = StudioData & {
     updateSettings: (patch: Partial<Omit<StudioSettings, "updatedAt">>) => void;
     bindAccountOwner: (userId: number) => void;
     replaceStudioData: (data: StudioData) => void;
+    recoverInterruptedJobs: () => boolean;
 };
 
 const defaultSettings: StudioSettings = {
@@ -47,7 +49,7 @@ const studioStorage: PersistStorage<StudioStore> = {
 
 export const useStudioStore = create<StudioStore>()(
     persist(
-        (set) => ({
+        (set, get) => ({
             hydrated: false,
             ownerUserId: null,
             profiles: [],
@@ -96,7 +98,16 @@ export const useStudioStore = create<StudioStore>()(
                     const updatedAt = new Date().toISOString();
                     return { jobs: state.jobs.filter((item) => item.id !== id), jobTombstones: addTombstone(state.jobTombstones, id, updatedAt) };
                 }),
-            updateSettings: (patch) => set((state) => ({ settings: { ...state.settings, ...patch, updatedAt: new Date().toISOString() } })),
+            updateSettings: (patch) =>
+                set((state) => ({
+                    settings: {
+                        ...state.settings,
+                        ...patch,
+                        count: boundedStudioInteger(patch.count, state.settings.count, 60),
+                        concurrency: boundedStudioInteger(patch.concurrency, state.settings.concurrency, MAX_STUDIO_CONCURRENCY),
+                        updatedAt: new Date().toISOString(),
+                    },
+                })),
             bindAccountOwner: (userId) =>
                 set((state) => {
                     if (!state.ownerUserId || state.ownerUserId === userId) return { ownerUserId: userId };
@@ -104,7 +115,7 @@ export const useStudioStore = create<StudioStore>()(
                         ownerUserId: userId,
                         profiles: [],
                         jobs: [],
-                        settings: { ...defaultSettings, updatedAt: new Date().toISOString() },
+                        settings: { ...defaultSettings },
                         profileTombstones: [],
                         jobTombstones: [],
                     };
@@ -112,11 +123,16 @@ export const useStudioStore = create<StudioStore>()(
             replaceStudioData: (data) =>
                 set({
                     profiles: data.profiles,
-                    jobs: data.jobs,
-                    settings: data.settings,
+                    jobs: normalizeStudioJobs(data.jobs).jobs,
+                    settings: normalizeStudioSettings(data.settings, defaultSettings),
                     profileTombstones: data.profileTombstones,
                     jobTombstones: data.jobTombstones,
                 }),
+            recoverInterruptedJobs: () => {
+                const recovered = normalizeStudioJobs(get().jobs, { recoverInterrupted: true });
+                if (recovered.changed) set({ jobs: recovered.jobs });
+                return recovered.changed;
+            },
         }),
         {
             name: "infinite-canvas:studio_store",
@@ -136,8 +152,8 @@ export const useStudioStore = create<StudioStore>()(
                     ...current,
                     ownerUserId: Number.isInteger(value.ownerUserId) ? value.ownerUserId! : null,
                     profiles: Array.isArray(value.profiles) ? value.profiles : [],
-                    jobs: Array.isArray(value.jobs) ? value.jobs : [],
-                    settings: { ...defaultSettings, ...(value.settings || {}) },
+                    jobs: normalizeStudioJobs(Array.isArray(value.jobs) ? value.jobs : [], { recoverInterrupted: true, touchRecoveredAt: false }).jobs,
+                    settings: normalizeStudioSettings(value.settings, defaultSettings),
                     profileTombstones: Array.isArray(value.profileTombstones) ? value.profileTombstones : [],
                     jobTombstones: Array.isArray(value.jobTombstones) ? value.jobTombstones : [],
                 };

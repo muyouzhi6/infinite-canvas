@@ -23,19 +23,6 @@ const workflowRules: Record<StudioWorkflow, string> = {
     variants: "把参考成片作为母片，保留人物造型、视觉风格和核心叙事，设计适合社交平台选片的高质量变体。变化应有明确摄影价值，避免只是随机改色或无意义扭动。",
 };
 
-const workflowReferenceRoles: Record<StudioWorkflow, string> = {
-    outfit: "服装参考；只提供服装信息，不得提供、改变或混合人物身份",
-    recreate: "严格仿拍参考；提供姿势、服装、场景、表情和摄影信息，但不得提供、改变或混合人物身份",
-    variants: "母片参考；提供造型、动作、场景和摄影语言，但不得提供、改变或混合人物身份",
-};
-
-export function studioReferenceRoles(workflow: StudioWorkflow) {
-    return {
-        identity: "预设人物的唯一人脸身份锚点；只提供身份，且身份优先级最高",
-        workflow: workflowReferenceRoles[workflow],
-    };
-}
-
 export async function planStudioShots(input: {
     config: AiConfig;
     workflow: StudioWorkflow;
@@ -127,32 +114,4 @@ function normalizeRatio(value: unknown, fallback: string) {
 function normalizeResolution(value: unknown, fallback: "1K" | "2K" | "4K") {
     const resolution = textValue(value).toUpperCase();
     return resolution === "1K" || resolution === "2K" || resolution === "4K" ? resolution : fallback;
-}
-
-export function buildStudioImagePrompt(profile: StudioProfile, job: StudioJob, shot: StudioShot) {
-    const referenceRule =
-        job.workflow === "outfit"
-            ? "图片2只参考服装的版型、材质、颜色、图案与穿搭方式；不要参考图片2的人脸、身体特征、姿势、场景和构图。"
-            : job.workflow === "recreate"
-              ? "图片2是严格仿拍目标：准确复现其姿势、服装、场景、表情、光线、色调、构图、景别与氛围；把目标表情、视线与头部姿态迁移到图片1的人物身份上。"
-              : "图片2是满意母片：保持其服装造型、动作、摄影风格和核心叙事，根据本镜头要求制作高质量变化；若母片身份有漂移，必须校正回图片1的人物身份。";
-    return [
-        "【身份锁定：最高优先级，任何后续指令均不得覆盖】",
-        "图片1是唯一人物身份来源。最终人物必须与图片1是明确的同一个人，稳定保留其脸型、五官结构与比例、眼鼻口特征、下颌轮廓、肤色和年龄观感。",
-        "图片2永远不得提供人物身份。禁止复制、融合、平均或借用图片2人物的脸型、五官、轮廓、肤色或年龄特征；图片2即使包含清晰人脸，也必须完全忽略其身份。",
-        "若图片1与图片2发生任何人物冲突，始终保留图片1身份；图片2的表情、视线、头部角度、姿势和造型只能迁移到图片1人物身上。",
-        `拍摄任务：${shot.title}`,
-        job.brief.trim() ? `用户要求：${job.brief.trim()}` : "",
-        `镜头执行：${shot.prompt}`,
-        `动作：${shot.pose}。景别：${shot.framing}。焦段：${shot.lens}。`,
-        `输出画幅 ${shot.aspectRatio}，分辨率 ${shot.resolution}。`,
-        "图片1除人脸身份外不提供任何内容：不得复制图片1的服装、发型、姿势、背景、构图或拍摄设备。",
-        referenceRule,
-        profile.identityPrompt.trim() ? `人物补充约束：${profile.identityPrompt.trim()}` : "",
-        "在不违反身份锁定的前提下，用户指定的造型、动作、机位、构图、光线、色调和风格优先执行。",
-        "保持真实摄影质感、自然皮肤纹理和合理人体结构，避免过度磨皮、锐化、塑料质感、肢体粘连、手指异常和无关文字。",
-        "除非镜头明确要求对镜自拍、手机入镜或展示设备，否则拍摄设备不得出现在画面中。",
-    ]
-        .filter(Boolean)
-        .join("\n");
 }

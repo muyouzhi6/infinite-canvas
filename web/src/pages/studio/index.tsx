@@ -5,7 +5,18 @@ import { saveAs } from "file-saver";
 import { nanoid } from "nanoid";
 
 import { ModelPicker } from "@/components/model-picker";
-import { buildStudioNodeConfig, bootstrapPaidAccount, completePaidAccount2FA, disconnectPaidAccount, loginPaidAccount, PAID_GEMINI_CHANNEL_ID, PAID_OPENAI_CHANNEL_ID } from "@/services/api/studio-account";
+import { Turnstile } from "@/components/turnstile";
+import {
+    buildStudioNodeConfig,
+    bootstrapPaidAccount,
+    completePaidAccount2FA,
+    disconnectPaidAccount,
+    loadPaidSiteLoginStatus,
+    loginPaidAccount,
+    PAID_GEMINI_CHANNEL_ID,
+    PAID_OPENAI_CHANNEL_ID,
+    type PaidSiteLoginStatus,
+} from "@/services/api/studio-account";
 import { requestEdit } from "@/services/api/image";
 import { deleteStoredImages, getImageBlob, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { cancelScheduledStudioCloudSync, scheduleStudioCloudSync, syncStudioCloud } from "@/services/studio-cloud";
@@ -945,10 +956,60 @@ function AccountModal({ open, busy, onClose, onConnected }: { open: boolean; bus
     const [flowToken, setFlowToken] = useState("");
     const [code, setCode] = useState("");
     const [loading, setLoading] = useState(false);
+    const [loginStatus, setLoginStatus] = useState<PaidSiteLoginStatus | null>(null);
+    const [statusLoading, setStatusLoading] = useState(false);
+    const [statusError, setStatusError] = useState("");
+    const [turnstileToken, setTurnstileToken] = useState("");
+    const [turnstileError, setTurnstileError] = useState("");
+    const [turnstileKey, setTurnstileKey] = useState(0);
+    const statusRequestRef = useRef(0);
+    const turnstileEnabled = Boolean(loginStatus?.turnstileCheck && loginStatus.turnstileSiteKey);
+    const canLogin = Boolean(username.trim() && password && loginStatus?.passwordLoginEnabled && !statusLoading && !statusError && (!turnstileEnabled || turnstileToken));
+
+    const refreshLoginStatus = async () => {
+        const requestId = ++statusRequestRef.current;
+        setStatusLoading(true);
+        setStatusError("");
+        try {
+            const status = await loadPaidSiteLoginStatus();
+            if (requestId === statusRequestRef.current) setLoginStatus(status);
+        } catch (error) {
+            if (requestId !== statusRequestRef.current) return;
+            setLoginStatus(null);
+            setStatusError(error instanceof Error ? error.message : "无法读取付费站登录状态");
+        } finally {
+            if (requestId === statusRequestRef.current) setStatusLoading(false);
+        }
+    };
+
+    const resetTurnstile = () => {
+        setTurnstileToken("");
+        setTurnstileError("");
+        setTurnstileKey((current) => current + 1);
+    };
+
+    useEffect(() => {
+        if (open) {
+            void refreshLoginStatus();
+            return;
+        }
+        statusRequestRef.current += 1;
+        setPassword("");
+        setFlowToken("");
+        setCode("");
+        setLoginStatus(null);
+        setStatusError("");
+        setTurnstileToken("");
+        setTurnstileError("");
+    }, [open]);
+
     const login = async () => {
+        if (!canLogin) return;
+        const submittedTurnstileToken = turnstileToken;
+        if (turnstileEnabled) resetTurnstile();
         setLoading(true);
         try {
-            const result = await loginPaidAccount(username, password);
+            const result = await loginPaidAccount(username.trim(), password, submittedTurnstileToken);
             if (!result.ready) return setFlowToken(result.flowToken);
             message.success("付费站账号已连接");
             onConnected();
@@ -1008,8 +1069,42 @@ function AccountModal({ open, busy, onClose, onConnected }: { open: boolean; bus
                 <div className="space-y-4 pt-2">
                     <p className="text-sm leading-6 text-stone-500">使用付费站的同一账号登录。影棚会读取该账号可用模型，并自动创建一个专用 API Key。</p>
                     <Input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" placeholder="用户名" />
-                    <Input.Password value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" placeholder="密码" onPressEnter={() => void login()} />
-                    <Button type="primary" block loading={loading} disabled={!username.trim() || !password} icon={<LogIn className="size-4" />} onClick={() => void login()}>
+                    <Input.Password value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" placeholder="密码" onPressEnter={() => canLogin && void login()} />
+                    {statusLoading ? (
+                        <div className="flex min-h-[65px] items-center justify-center gap-2 text-xs text-stone-500">
+                            <LoaderCircle className="size-4 animate-spin" />
+                            正在读取安全设置
+                        </div>
+                    ) : statusError ? (
+                        <div className="flex min-h-[65px] items-center justify-between gap-3 border border-red-200 bg-red-50 px-3 text-xs text-red-700 dark:border-red-950 dark:bg-red-950/30 dark:text-red-300">
+                            <span className="min-w-0 break-words">{statusError}</span>
+                            <Button size="small" type="text" icon={<RotateCcw className="size-3.5" />} onClick={() => void refreshLoginStatus()} aria-label="重新加载安全设置" />
+                        </div>
+                    ) : turnstileEnabled && loginStatus ? (
+                        <div className="w-full max-w-full">
+                            <Turnstile
+                                siteKey={loginStatus.turnstileSiteKey}
+                                refreshKey={turnstileKey}
+                                onVerify={(token) => {
+                                    setTurnstileToken(token);
+                                    setTurnstileError("");
+                                }}
+                                onExpire={() => setTurnstileToken("")}
+                                onError={() => {
+                                    setTurnstileToken("");
+                                    setTurnstileError("安全验证加载失败");
+                                }}
+                            />
+                            {turnstileError ? (
+                                <Button className="mt-2" size="small" block icon={<RotateCcw className="size-3.5" />} onClick={resetTurnstile}>
+                                    重新加载安全验证
+                                </Button>
+                            ) : null}
+                        </div>
+                    ) : loginStatus && !loginStatus.passwordLoginEnabled ? (
+                        <p className="text-center text-sm text-stone-500">付费站当前未开放密码登录。</p>
+                    ) : null}
+                    <Button type="primary" block loading={loading} disabled={!canLogin} icon={<LogIn className="size-4" />} onClick={() => void login()}>
                         登录并连接
                     </Button>
                     <a className="block text-center text-sm" href="/login?redirect=/studio/">

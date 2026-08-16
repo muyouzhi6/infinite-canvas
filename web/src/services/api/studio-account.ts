@@ -21,6 +21,17 @@ type AuthBundle = {
 type LoginResult = { ready: true } | { ready: false; flowToken: string };
 type TokenItem = { id: number; name: string; status: number; created_time?: number };
 type TokenPage = { items?: TokenItem[]; total?: number };
+type PaidSiteStatusPayload = {
+    turnstile_check?: boolean;
+    turnstile_site_key?: string;
+    password_login_enabled?: boolean;
+};
+
+export type PaidSiteLoginStatus = {
+    turnstileCheck: boolean;
+    turnstileSiteKey: string;
+    passwordLoginEnabled: boolean;
+};
 
 const STUDIO_TOKEN_NAME = "人物影棚";
 export const PAID_OPENAI_CHANNEL_ID = "huiliu-account-openai";
@@ -198,10 +209,27 @@ export async function bootstrapPaidAccount() {
     }
 }
 
-export async function loginPaidAccount(username: string, password: string): Promise<LoginResult> {
+export async function loadPaidSiteLoginStatus(): Promise<PaidSiteLoginStatus> {
+    const response = await fetch(accountUrl("/api/status"), { credentials: "include" });
+    const body = await parseResponse<PaidSiteStatusPayload>(response);
+    if (!body.data) throw new Error("付费站登录状态为空");
+    const turnstileCheck = body.data.turnstile_check === true;
+    const turnstileSiteKey = body.data.turnstile_site_key?.trim() || "";
+    if (turnstileCheck && !turnstileSiteKey) throw new Error("付费站人机验证配置不完整");
+    return {
+        turnstileCheck,
+        turnstileSiteKey,
+        passwordLoginEnabled: body.data.password_login_enabled !== false,
+    };
+}
+
+export async function loginPaidAccount(username: string, password: string, turnstileToken = ""): Promise<LoginResult> {
     useStudioAuthStore.getState().setSession({ status: "loading", error: "" });
     try {
-        const response = await fetch(accountUrl("/api/user/login"), {
+        const query = new URLSearchParams();
+        if (turnstileToken) query.set("turnstile", turnstileToken);
+        const loginPath = `/api/user/login${query.size ? `?${query.toString()}` : ""}`;
+        const response = await fetch(accountUrl(loginPath), {
             method: "POST",
             credentials: "include",
             headers: { "Content-Type": "application/json" },

@@ -3,6 +3,7 @@ export type ReferenceImage = {
     name: string;
     type: string;
     dataUrl: string;
+    promptRole?: string;
     url?: string;
     storageKey?: string;
 };

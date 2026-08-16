@@ -5,7 +5,7 @@ import { buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelSc
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
-import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
+import { buildImageReferencePromptText, imageReferenceDescriptor } from "@/lib/image-reference-prompt";
 import { imageToDataUrl } from "@/services/image-storage";
 import type { ReferenceImage } from "@/types/image";
 
@@ -695,7 +695,8 @@ async function requestGeminiImages(config: AiConfig, prompt: string, references:
 
 async function requestGeminiImagesOnce(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
     const parts: GeminiPart[] = [{ text: prompt }];
-    for (const image of references) {
+    for (const [index, image] of references.entries()) {
+        if (image.promptRole?.trim()) parts.push({ text: `${imageReferenceDescriptor(image, index)}：下面紧随的图片属于此角色。` });
         parts.push(toGeminiImagePart(await imageToDataUrl(image)));
     }
     const response = await axios.post<GeminiPayload>(

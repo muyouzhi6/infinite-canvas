@@ -20,7 +20,7 @@ import {
 import { requestEdit } from "@/services/api/image";
 import { deleteStoredImages, getImageBlob, resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { cancelScheduledStudioCloudSync, scheduleStudioCloudSync, syncStudioCloud } from "@/services/studio-cloud";
-import { buildStudioImagePrompt, planStudioShots } from "@/services/studio-planner";
+import { buildStudioImagePrompt, planStudioShots, studioReferenceRoles } from "@/services/studio-planner";
 import { guessCapability, resolveModelForCapability, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useStudioAuthStore } from "@/stores/use-studio-auth-store";
 import { useStudioStore } from "@/stores/use-studio-store";
@@ -282,7 +282,11 @@ export default function StudioPage() {
         const startedAt = performance.now();
         try {
             const config = buildStudioNodeConfig(effectiveConfig, shot.modelSource, shot.model, "image", { aspectRatio: shot.aspectRatio, resolution: shot.resolution });
-            const references: ReferenceImage[] = [toReference(profile.identity, "人物脸部参考"), toReference(job.reference, workflowMeta[job.workflow].reference)];
+            const roles = studioReferenceRoles(job.workflow);
+            const references: ReferenceImage[] = [
+                toReference(profile.identity, "identity-anchor.png", roles.identity),
+                toReference(job.reference, `${job.workflow}-reference.png`, roles.workflow),
+            ];
             const result = await requestEdit(config, buildStudioImagePrompt(profile, job, shot), references, undefined, { signal });
             if (!result[0]?.dataUrl) throw new Error("模型没有返回图片");
             const stored = await storeImageData(result[0].dataUrl, `${job.title}-${shot.index + 1}.png`);
@@ -669,8 +673,8 @@ function withoutPaidChannels(config: AiConfig): AiConfig {
     return { ...config, channels, models: channels.flatMap((channel) => channel.models.map((model) => `${channel.id}::${model.name}`)) };
 }
 
-function toReference(image: StudioStoredImage, name: string): ReferenceImage {
-    return { id: image.id, name, type: image.mimeType, dataUrl: "", storageKey: image.storageKey };
+function toReference(image: StudioStoredImage, name: string, promptRole: string): ReferenceImage {
+    return { id: image.id, name, type: image.mimeType, dataUrl: "", promptRole, storageKey: image.storageKey };
 }
 
 async function storeImage(file: Blob & { name?: string }): Promise<StudioStoredImage> {

@@ -186,6 +186,15 @@ function isAiConfigReady(config: AiConfig, model: string) {
     return Boolean(model.trim() && channel.baseUrl.trim() && channel.apiKey.trim());
 }
 
+const TRANSIENT_CHANNEL_IDS = new Set(["huiliu-account-openai", "huiliu-account-gemini"]);
+
+export function redactTransientChannelSecrets(config: AiConfig): AiConfig {
+    return {
+        ...config,
+        channels: config.channels.map((channel) => (TRANSIENT_CHANNEL_IDS.has(channel.id) ? { ...channel, apiKey: "" } : channel)),
+    };
+}
+
 export const useConfigStore = create<ConfigStore>()(
     persist(
         (set, get) => ({
@@ -215,7 +224,7 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
-            partialize: (state) => ({ config: state.config, webdav: state.webdav }),
+            partialize: (state) => ({ config: redactTransientChannelSecrets(state.config), webdav: state.webdav }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;

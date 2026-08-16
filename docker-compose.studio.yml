@@ -1,0 +1,40 @@
+services:
+  studio-web:
+    build:
+      context: .
+      args:
+        VITE_BASE: /studio/
+    container_name: personal-image-studio-web
+    ports:
+      - "127.0.0.1:17643:3000"
+    depends_on:
+      studio-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - studio
+
+  studio-api:
+    build:
+      context: ./studio-server
+    container_name: personal-image-studio-api
+    environment:
+      DATA_DIR: /data
+      PAID_SITE_INTERNAL_URL: http://huiliu-api:3000
+    volumes:
+      - ./studio-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3100/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - studio
+      - huiliu-api
+
+networks:
+  studio:
+  huiliu-api:
+    external: true
+    name: huiliu-api-internal

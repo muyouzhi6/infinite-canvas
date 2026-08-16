@@ -10,26 +10,34 @@ import HomePage from "@/pages/home";
 import ImagePage from "@/pages/image";
 import NotFound from "@/pages/not-found";
 import PromptsPage from "@/pages/prompts";
+import StudioPage from "@/pages/studio";
 import VideoPage from "@/pages/video";
 
-export const router = createBrowserRouter([
-    {
-        element: (
-            <UserLayout>
-                <AnalyticsTracker />
-                <Outlet />
-            </UserLayout>
-        ),
-        children: [
-            { path: "/", element: <HomePage /> },
-            { path: "/image", element: <ImagePage /> },
-            { path: "/video", element: <VideoPage /> },
-            { path: "/assets", element: <AssetsPage /> },
-            { path: "/prompts", element: <PromptsPage /> },
-            { path: "/canvas", element: <CanvasPage /> },
-            { path: "/canvas/:id", element: <CanvasProjectPage /> },
-            { path: "/config", element: <ConfigPage /> },
-        ],
-    },
-    { path: "*", element: <NotFound /> },
-]);
+const basePath = String(import.meta.env.BASE_URL || "/").replace(/\/$/, "") || "/";
+
+export const router = createBrowserRouter(
+    [
+        {
+            element: (
+                <UserLayout>
+                    <AnalyticsTracker />
+                    <Outlet />
+                </UserLayout>
+            ),
+            children: [
+                { path: "/", element: basePath === "/" ? <HomePage /> : <StudioPage /> },
+                { path: "/home", element: <HomePage /> },
+                { path: "/studio", element: <StudioPage /> },
+                { path: "/image", element: <ImagePage /> },
+                { path: "/video", element: <VideoPage /> },
+                { path: "/assets", element: <AssetsPage /> },
+                { path: "/prompts", element: <PromptsPage /> },
+                { path: "/canvas", element: <CanvasPage /> },
+                { path: "/canvas/:id", element: <CanvasProjectPage /> },
+                { path: "/config", element: <ConfigPage /> },
+            ],
+        },
+        { path: "*", element: <NotFound /> },
+    ],
+    { basename: basePath },
+);

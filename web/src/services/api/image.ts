@@ -1,7 +1,7 @@
 import axios from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
@@ -118,6 +118,11 @@ const IMAGE_OUTPUT_FORMAT = "png";
 
 const GEMINI_SUPPORTED_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
 const GEMINI_IMAGE_SIZE_BY_QUALITY: Record<string, string> = { low: "1K", medium: "2K", high: "4K", standard: "1K", hd: "2K" };
+const GPT_IMAGE_2_SIZE_BY_QUALITY: Record<string, Record<string, string>> = {
+    low: { "1:1": "1024x1024", "16:9": "1280x720", "9:16": "720x1280", "5:4": "1040x832", "4:5": "832x1040", "4:3": "1024x768", "3:4": "768x1024", "3:2": "1008x672", "2:3": "672x1008", "21:9": "1344x576" },
+    medium: { "1:1": "2048x2048", "16:9": "2048x1152", "9:16": "1152x2048", "5:4": "2080x1664", "4:5": "1664x2080", "4:3": "2048x1536", "3:4": "1536x2048", "3:2": "2064x1376", "2:3": "1376x2064", "21:9": "2016x864" },
+    high: { "1:1": "2880x2880", "16:9": "3840x2160", "9:16": "2160x3840", "5:4": "3200x2560", "4:5": "2560x3200", "4:3": "3264x2448", "3:4": "2448x3264", "3:2": "3504x2336", "2:3": "2336x3504", "21:9": "3808x1632" },
+};
 
 function normalizeQuality(quality: string) {
     const value = quality.trim().toLowerCase();
@@ -185,7 +190,7 @@ function validateImageSize(width: number, height: number) {
     if (pixels < IMAGE_MIN_PIXELS || pixels > IMAGE_MAX_PIXELS) throw new Error(apiText("imagePixelLimit"));
 }
 
-function resolveRequestSize(quality: string | undefined, size: string) {
+function resolveRequestSize(quality: string | undefined, size: string, model = "") {
     const value = size.trim();
     if (!value || value.toLowerCase() === "auto") return undefined;
     const dimensions = parseImageDimensions(value);
@@ -193,7 +198,14 @@ function resolveRequestSize(quality: string | undefined, size: string) {
         validateImageSize(dimensions.width, dimensions.height);
         return `${dimensions.width}x${dimensions.height}`;
     }
-    if (value.includes(":")) return resolveSize(quality, value);
+    if (value.includes(":")) {
+        const mappedQuality = quality === "standard" ? "low" : quality === "hd" ? "medium" : quality;
+        if (modelOptionName(model).toLowerCase().includes("gpt-image-2") && mappedQuality) {
+            const exactSize = GPT_IMAGE_2_SIZE_BY_QUALITY[mappedQuality]?.[value];
+            if (exactSize) return exactSize;
+        }
+        return resolveSize(quality, value);
+    }
     throw new Error(apiText("invalidImageSizeFormat"));
 }
 
@@ -204,7 +216,7 @@ function resolveGeminiImageConfig(config: AiConfig) {
     const aspectRatio = value && value.toLowerCase() !== "auto" ? closestGeminiAspectRatio(ratio) : undefined;
     const imageSize = supportsGeminiImageSize(config.model) ? resolveGeminiImageSize(config.quality, dimensions) : undefined;
     const image = { ...(aspectRatio ? { aspectRatio } : {}), ...(imageSize ? { imageSize } : {}) };
-    return Object.keys(image).length ? { responseFormat: { image } } : {};
+    return Object.keys(image).length ? { imageConfig: image } : {};
 }
 
 function closestGeminiAspectRatio(value: string) {
@@ -719,7 +731,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
         const quality = normalizeQuality(config.quality);
-        const requestSize = resolveRequestSize(quality, config.size);
+        const requestSize = resolveRequestSize(quality, config.size, requestConfig.model);
         const background = normalizeBackground(config.background);
         try {
             const result = await runModelPlugin({
@@ -744,7 +756,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
         }
     }
     const quality = normalizeQuality(config.quality);
-    const requestSize = resolveRequestSize(quality, config.size);
+    const requestSize = resolveRequestSize(quality, config.size, requestConfig.model);
     const background = normalizeBackground(config.background);
     try {
         const response = await axios.post<ImageApiResponse>(
@@ -778,7 +790,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
         const quality = normalizeQuality(config.quality);
-        const requestSize = resolveRequestSize(quality, config.size);
+        const requestSize = resolveRequestSize(quality, config.size, requestConfig.model);
         const background = normalizeBackground(config.background);
         const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
         try {
@@ -808,7 +820,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (requestConfig.apiFormat === "ark") {
         if (mask) throw new Error(apiText("maskModelUnsupported"));
         const quality = normalizeQuality(config.quality);
-        const requestSize = resolveRequestSize(quality, config.size);
+        const requestSize = resolveRequestSize(quality, config.size, requestConfig.model);
         const background = normalizeBackground(config.background);
         const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
         try {
@@ -837,7 +849,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     }
 
     const quality = normalizeQuality(config.quality);
-    const requestSize = resolveRequestSize(quality, config.size);
+    const requestSize = resolveRequestSize(quality, config.size, requestConfig.model);
     const background = normalizeBackground(config.background);
     const formData = new FormData();
     formData.set("model", requestConfig.model);

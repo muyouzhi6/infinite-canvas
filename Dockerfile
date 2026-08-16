@@ -2,6 +2,8 @@
 FROM oven/bun:1.3.13 AS web-build
 
 WORKDIR /app/web
+ARG VITE_BASE=/
+ENV VITE_BASE=$VITE_BASE
 COPY web/package.json web/bun.lock ./
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install --cache-dir=/root/.bun/install/cache
 COPY VERSION /app/VERSION
@@ -9,7 +11,7 @@ COPY CHANGELOG.md /app/CHANGELOG.md
 COPY web ./
 RUN bun run build
 
-# 运行镜像：只启动静态前端，AI 请求由浏览器前台直连用户自己的接口。
+# 运行镜像：静态前端与账号隔离的同步 API 使用同一入口。
 FROM nginx:1.27-alpine
 
 COPY --from=web-build /app/web/dist /usr/share/nginx/html

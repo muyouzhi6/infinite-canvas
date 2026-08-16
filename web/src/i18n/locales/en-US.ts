@@ -309,6 +309,7 @@ export default {
         },
     },
     navigation: {
+        studio: "Portrait Studio",
         canvas: "My Canvases",
         image: "Image Studio",
         video: "Video Studio",

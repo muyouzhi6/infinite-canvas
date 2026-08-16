@@ -1,0 +1,8 @@
+{
+  "name": "personal-image-studio-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

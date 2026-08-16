@@ -309,6 +309,7 @@ export default {
         },
     },
     navigation: {
+        studio: "人物影棚",
         canvas: "我的画布",
         image: "生图工作台",
         video: "视频创作台",

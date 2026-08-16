@@ -1,6 +1,10 @@
-import { FileText, ImagePlus, Images, Maximize2, Settings2, Video } from "lucide-react";
+import { Camera, FileText, ImagePlus, Images, Maximize2, Settings2, Video } from "lucide-react";
 
 export const navigationTools = [
+    {
+        slug: "studio",
+        icon: Camera,
+    },
     {
         slug: "canvas",
         icon: Maximize2,
@@ -28,3 +32,7 @@ export const navigationTools = [
 ] as const;
 
 export type NavigationToolSlug = (typeof navigationTools)[number]["slug"];
+
+export function navigationToolPath(slug: NavigationToolSlug) {
+    return slug === "studio" && import.meta.env.BASE_URL !== "/" ? "/" : `/${slug}`;
+}
